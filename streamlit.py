@@ -30,8 +30,8 @@ from langchain.chains import ConversationChain
 import streamlit.components.v1 as components
 # Environment Variables
 os.environ['HF_HOME'] = '/path/to/your/hf/cache'
-os.environ['HUGGINGFACE_TOKEN'] = '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'  # Your Hugging Face token
-API_KEY_COHERE = 'Q291Ze67Dtfj0RCOhrBbX8rQR9odbdWPlRg4GvSZ'
+os.environ['HUGGINGFACE_TOKEN'] = ''  # Your Hugging Face token
+API_KEY_COHERE = ''
 co = cohere.Client(API_KEY_COHERE)
 
 # Streamlit chatbot interface
