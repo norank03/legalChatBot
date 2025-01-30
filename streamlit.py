@@ -28,35 +28,27 @@ from langchain.llms import HuggingFacePipeline
 from langchain.memory import ConversationSummaryMemory
 from langchain.chains import ConversationChain
 import streamlit.components.v1 as components
-# Environment Variables
+
 os.environ['HF_HOME'] = '/path/to/your/hf/cache'
-os.environ['HUGGINGFACE_TOKEN'] = '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'  # Your Hugging Face token
-API_KEY_COHERE = 'Q291Ze67Dtfj0RCOhrBbX8rQR9odbdWPlRg4GvSZ'
+os.environ['HUGGINGFACE_TOKEN'] = 
+API_KEY_COHERE = 
 co = cohere.Client(API_KEY_COHERE)
 
-# Streamlit chatbot interface
 st.title("المساعد القانوني الذكي")
 
-# Load the tokenizer and model
 assert torch.cuda.is_available(), "GPU is not available. Please check your runtime settings."
 device = "cuda"
 
-
-
-# Document class
 class Document:
     def __init__(self, page_content, metadata=None):
         self.page_content = page_content
         self.metadata = metadata or {}
 
-# Main chatbot flow
 def main():
     global tokenizer, model, classifier, bm25 
 
-    # Ensure you're using the GPU
     assert torch.cuda.is_available(), "GPU is not available. Please check your runtime settings."
     
-    # Initialize tokenizer, model, and classifier
     if 'tokenizer' not in st.session_state:
         st.session_state.tokenizer = AutoTokenizer.from_pretrained("Nourankoro/Last_Jais")
 
@@ -70,11 +62,9 @@ def main():
     if 'classifier' not in st.session_state:
         st.session_state.classifier = pipeline("zero-shot-classification", model="joeddav/xlm-roberta-large-xnli")
 
-    # Load document
     with open('madany.txt', 'r', encoding='utf-8') as file:
         extracted_text = file.read()
 
-    # Split the text into chunks
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=500)
     if 'doc_splits' not in st.session_state: 
         st.session_state.doc_splits = text_splitter.create_documents([extracted_text])
@@ -85,13 +75,11 @@ def main():
     classifier = st.session_state.classifier
     tokenizer = st.session_state.tokenizer
 
-    # Initialize BM25
     tokenized_corpus = [bm25_tokenizer(passage.page_content) for passage in tqdm(doc_splits)]
     if 'bm25' not in st.session_state:
         st.session_state.bm25 = BM25Okapi(tokenized_corpus)
     
     bm25 = st.session_state.bm25 
-
 
 def bm25_tokenizer(text):
     return re.findall(r'\w+', text.lower())
@@ -122,7 +110,6 @@ class GraphState(TypedDict):
 workflow = StateGraph(GraphState)
 
 def route_question(state: dict) -> str:
-    """Route a user question to either a vector store or Google Search using an LLM."""
     print("---Route Question---")
     
     question = state["question"]
@@ -142,7 +129,6 @@ def route_question(state: dict) -> str:
     return llm_response
 
 def retrieve(state: GraphState) -> GraphState:
-    """Retrieve documents using unified search based on the model."""
     print("---Retrieve Documents---")
 
     question = state["question"]
@@ -162,8 +148,6 @@ def retrieve(state: GraphState) -> GraphState:
     return state
 
 def RetrievalGrader(state):
-    """Grades the relevance of a retrieved document based on a user question."""
-    
     question = state.get("question", "")
     docs = state.get("documents", [])
     
@@ -188,12 +172,7 @@ def RetrievalGrader(state):
     else:
         return "summarize_document"
 
-
-
-from googlesearch import search  # Ensure this library is properly installed
-
 def google_search(state: GraphState, number_of_results=10) -> GraphState:
-    """Google search based on the question and retrieve the first successful result."""
     print("---Google Search---")
     question = state["question"]
     print(f"Searching for: {question}")
@@ -202,7 +181,6 @@ def google_search(state: GraphState, number_of_results=10) -> GraphState:
     state["documents"] = []
 
     try:
-        # Use correct argument for number of results
         google_results = list(search(question, number_of_results))
     except Exception as e:
         print(f"Error during Google search: {e}")
@@ -214,8 +192,8 @@ def google_search(state: GraphState, number_of_results=10) -> GraphState:
         for url in google_results:
             print(f"Trying URL: {url}")
             try:
-                response = session.get(url, verify=True)  # Change to True for SSL verification
-                response.raise_for_status()  # Raise an error for bad responses
+                response = session.get(url, verify=True)
+                response.raise_for_status()
                 soup = BeautifulSoup(response.content, 'html.parser')
 
                 paragraphs = soup.find_all('p')
@@ -224,41 +202,34 @@ def google_search(state: GraphState, number_of_results=10) -> GraphState:
                 document = Document(page_content=page_content)
                 state.setdefault("documents", []).append(document)
                 print("Extracted content from the URL.")
-                break  # Exit loop if successful
+                break
             except requests.exceptions.HTTPError as http_error:
                 if http_error.response.status_code == 403:
                     print(f"Access forbidden for {url}. Trying the next URL...")
-                    continue  # Try the next URL
+                    continue
                 else:
                     print(f"HTTP Error for {url}: {http_error}")
-                    break  # Exit loop for other HTTP errors
+                    break
             except requests.exceptions.SSLError as ssl_error:
                 print(f"SSL Error for {url}: {ssl_error}")
-                continue  # Continue to the next URL
+                continue
             except Exception as e:
                 print(f"Error fetching or parsing the URL: {e}")
-                continue  # Continue to the next URL
+                continue
     else:
         print("No Google results found.")
 
     return state
 
-
-
-import re
-
 def clean_text(generation):
-    """Advanced Arabic text cleaner with answer extraction"""
-    # Extract content after "الإجابة"
     answer_start = re.split(r'(الإجابة\s*[:.]?)', generation, maxsplit=1, flags=re.IGNORECASE)
     if len(answer_start) > 2:
         cleaned = answer_start[-1]
     else:
         cleaned = generation
 
-    # Remove unwanted patterns
     patterns_to_remove = [
-        r'^.*?(الإجابة\s*[:.]?)',  # Remove everything before "الإجابة"
+        r'^.*?(الإجابة\s*[:.]?)',
         r'الجواب\s*:.*?(?=الإجابة|$)',
         r'المطلوب\s*:.*?(?=الإجابة|$)',
         r'ملخص\s*:.*?(?=الإجابة|$)',
@@ -272,21 +243,17 @@ def clean_text(generation):
     
     cleaned = combined_pattern.sub('', cleaned)
     
-    # Additional cleaning steps
-    cleaned = re.sub(r'\s+', ' ', cleaned)  # Remove extra whitespace
-    cleaned = re.sub(r'\s*([\.،:;])\s*', r'\1 ', cleaned)  # Fix punctuation spacing
-    cleaned = re.sub(r'^\W+|\W+$', '', cleaned)  # Trim leading/trailing non-word chars
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = re.sub(r'\s*([\.،:;])\s*', r'\1 ', cleaned)
+    cleaned = re.sub(r'^\W+|\W+$', '', cleaned)
 
-    # Ensure Arabic content exists
     if not re.search(r'[\u0600-\u06FF]', cleaned):
         return "لا تتوفر معلومات كافية"
     
-    # Format numbered points
-    cleaned = re.sub(r'(\d+)\.', r'\1-', cleaned)  # Replace numbered points with dashes
+    cleaned = re.sub(r'(\d+)\.', r'\1-', cleaned)
     return cleaned.strip()
     
 def summarize_document(state: GraphState) -> GraphState:
-    """Summarize the retrieved document using the LLM."""
     if "Messages" not in state:
         state["Messages"] = []
 
@@ -294,11 +261,9 @@ def summarize_document(state: GraphState) -> GraphState:
         document = state["documents"][0]
         if isinstance(document, Document):
             try:
-                # Extract and clean content
-                content = document.page_content[:3000]  # Limit input size
+                content = document.page_content[:3000]
                 cleaned_content = re.sub(r'\s+', ' ', content).strip()
 
-                # Create focused summary prompt
                 model_input = f"""
                 النص القانوني:
                 {cleaned_content}
@@ -313,7 +278,6 @@ def summarize_document(state: GraphState) -> GraphState:
                 الملخص:
                 """
 
-                # Tokenize and generate
                 inputs = st.session_state.tokenizer(
                     model_input,
                     return_tensors="pt",
@@ -321,7 +285,6 @@ def summarize_document(state: GraphState) -> GraphState:
                     truncation=True
                 ).to(model.device)
 
-                # Generate summary
                 with torch.no_grad():
                     response = st.session_state.model.generate(
                         **inputs,
@@ -331,11 +294,9 @@ def summarize_document(state: GraphState) -> GraphState:
                         temperature=0.5
                     )
 
-                # Decode and clean
                 raw_summary = st.session_state.tokenizer.decode(response[0], skip_special_tokens=True)
                 cleaned_summary = clean_text(raw_summary)
 
-                # Enforce line limits
                 summary_lines = [line.strip() for line in cleaned_summary.split('.') if line.strip()][:3]
                 final_summary = '. '.join(summary_lines)
 
@@ -352,11 +313,9 @@ def summarize_document(state: GraphState) -> GraphState:
     return state
 
 def call_llm_with_top_paragraphs(state: GraphState) -> GraphState:
-    """Generate concise legal answers with enhanced cleaning"""
     question = clean_text(state.get("question", ""))
     context = state.get("Messages", ["لا يوجد سياق"])[-1][:500]
 
-    # Enhanced prompt template
     prompt_template = """
     السؤال القانوني:
     {question}
@@ -381,7 +340,6 @@ def call_llm_with_top_paragraphs(state: GraphState) -> GraphState:
         truncation=True
     ).to(model.device)
 
-    # Generate response
     with torch.no_grad():
         response = st.session_state.model.generate(
             **inputs,
@@ -393,28 +351,23 @@ def call_llm_with_top_paragraphs(state: GraphState) -> GraphState:
             repetition_penalty=1.2
         )
 
-    # Post-processing
     raw_answer = st.session_state.tokenizer.decode(response[0], skip_special_tokens=True)
     cleaned_answer = clean_text(raw_answer)
     
-    # Final validation
     if not cleaned_answer.startswith("الإجابة"):
         cleaned_answer = f"الإجابة هي:\n{cleaned_answer}"
     
-    # Format Arabic numbering
     cleaned_answer = re.sub(r'(\d+)-', lambda m: f"{int(m.group(1))}٫", cleaned_answer)
     
     state["generation"] = cleaned_answer
     state["Messages"].append(f"Q: {question}\nA: {state['generation']}")
     return state
 
-
 workflow.add_node("retrieve", retrieve)
 workflow.add_node("google_search", google_search)
 workflow.add_node("summarize_document", summarize_document)
 workflow.add_node("call_llm", call_llm_with_top_paragraphs)
 
-# Define edges based on conditions
 workflow.add_conditional_edges(
     START,
     route_question,
@@ -444,7 +397,6 @@ if 'app' not in st.session_state:
 
 main()
 
-# Load your model pipeline
 pipe = pipeline(
     "text-generation",
     model=model,
@@ -457,7 +409,7 @@ llm = HuggingFacePipeline(pipeline=pipe)
 
 class Message:
     def __init__(self, origin, message):
-        self.origin = origin  # 'human' or 'ai'
+        self.origin = origin
         self.message = message
 
 def load_css():
@@ -555,7 +507,6 @@ def initialize_session_state():
             memory=ConversationSummaryMemory(llm=llm),
         )
 
-# Update the on_click_callback function
 def on_click_callback():
     human_prompt = st.session_state.human_prompt
     st.session_state.history.append(Message("human", human_prompt))
@@ -571,14 +522,12 @@ def on_click_callback():
         try:
             final_state = st.session_state.app.invoke(state)
             if final_state["generation"]:
-                # Apply final cleaning before display
                 cleaned_response = clean_text(final_state["generation"])
                 st.session_state.history.append(Message("ai", cleaned_response))
         except Exception as e:
             st.error(f"حدث خطأ في المعالجة: {str(e)}")
             st.session_state.history.append(Message("ai", "حدث خطأ غير متوقع. يرجى المحاولة لاحقًا."))
 
-            
 load_css()
 initialize_session_state()
 
