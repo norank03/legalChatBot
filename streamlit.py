@@ -30,12 +30,12 @@ from langchain.chains import ConversationChain
 import streamlit.components.v1 as components
 # Environment Variables
 os.environ['HF_HOME'] = '/path/to/your/hf/cache'
-os.environ['HUGGINGFACE_TOKEN'] = ''  
-API_KEY_COHERE = ''
+os.environ['HUGGINGFACE_TOKEN'] = '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'  # Your Hugging Face token
+API_KEY_COHERE = 'Q291Ze67Dtfj0RCOhrBbX8rQR9odbdWPlRg4GvSZ'
 co = cohere.Client(API_KEY_COHERE)
 
 # Streamlit chatbot interface
-st.title("Legal Chatbot")
+st.title("المساعد القانوني الذكي")
 
 # Load the tokenizer and model
 assert torch.cuda.is_available(), "GPU is not available. Please check your runtime settings."
@@ -245,8 +245,46 @@ def google_search(state: GraphState, number_of_results=10) -> GraphState:
 
 
 
+import re
 
+def clean_text(generation):
+    """Advanced Arabic text cleaner with answer extraction"""
+    # Extract content after "الإجابة"
+    answer_start = re.split(r'(الإجابة\s*[:.]?)', generation, maxsplit=1, flags=re.IGNORECASE)
+    if len(answer_start) > 2:
+        cleaned = answer_start[-1]
+    else:
+        cleaned = generation
 
+    # Remove unwanted patterns
+    patterns_to_remove = [
+        r'^.*?(الإجابة\s*[:.]?)',  # Remove everything before "الإجابة"
+        r'الجواب\s*:.*?(?=الإجابة|$)',
+        r'المطلوب\s*:.*?(?=الإجابة|$)',
+        r'ملخص\s*:.*?(?=الإجابة|$)',
+        r'التعليمات.*?(?=الإجابة|$)',
+    ]
+    
+    combined_pattern = re.compile(
+        r'(' + '|'.join(patterns_to_remove) + r')',
+        flags=re.IGNORECASE | re.UNICODE | re.DOTALL
+    )
+    
+    cleaned = combined_pattern.sub('', cleaned)
+    
+    # Additional cleaning steps
+    cleaned = re.sub(r'\s+', ' ', cleaned)  # Remove extra whitespace
+    cleaned = re.sub(r'\s*([\.،:;])\s*', r'\1 ', cleaned)  # Fix punctuation spacing
+    cleaned = re.sub(r'^\W+|\W+$', '', cleaned)  # Trim leading/trailing non-word chars
+
+    # Ensure Arabic content exists
+    if not re.search(r'[\u0600-\u06FF]', cleaned):
+        return "لا تتوفر معلومات كافية"
+    
+    # Format numbered points
+    cleaned = re.sub(r'(\d+)\.', r'\1-', cleaned)  # Replace numbered points with dashes
+    return cleaned.strip()
+    
 def summarize_document(state: GraphState) -> GraphState:
     """Summarize the retrieved document using the LLM."""
     if "Messages" not in state:
@@ -255,167 +293,120 @@ def summarize_document(state: GraphState) -> GraphState:
     if "documents" in state and state["documents"]:
         document = state["documents"][0]
         if isinstance(document, Document):
-            content = document.page_content
-            user_input = state.get("question", "")
-            combined_content = "\n\n".join(state["Messages"] + [content, user_input])
+            try:
+                # Extract and clean content
+                content = document.page_content[:3000]  # Limit input size
+                cleaned_content = re.sub(r'\s+', ' ', content).strip()
 
-            # Create a prompt for summarization
-            model_input = (
-                f"Summarize the following document in 400 words or less, ensuring the summary is coherent and logical:\n\n{content}\n\n"
-                "Only provide the summary without repeating the document or sentences, words , or the question."
-            )
+                # Create focused summary prompt
+                model_input = f"""
+                النص القانوني:
+                {cleaned_content}
 
-            # Tokenize input and handle input length
-            inputs = st.session_state.tokenizer(model_input, return_tensors="pt").to(model.device)
+                التعليمات:
+                1. لخص المحتوى في 3-5 جمل قصيرة
+                2. ركز على العناصر القانونية الأساسية
+                3. تجنب التفاصيل الثانوية
+                4. استخدم لغة عربية فصيحة
+                5. لا تقوم بالاجابه باى لغه سوى العربيه
+                6. لا تقوم باضافه هذه التعليمات فى اجاباتك
+                الملخص:
+                """
 
-            if 'token_type_ids' in inputs:
-                del inputs['token_type_ids']
+                # Tokenize and generate
+                inputs = st.session_state.tokenizer(
+                    model_input,
+                    return_tensors="pt",
+                    max_length=4096,
+                    truncation=True
+                ).to(model.device)
 
-            # Ensure the input does not exceed the model's maximum input length
-            max_input_length = st.session_state.model.config.max_position_embeddings
-            if inputs['input_ids'].shape[1] > max_input_length:
-                inputs['input_ids'] = inputs['input_ids'][:, :max_input_length]
-                if 'attention_mask' in inputs:
-                    inputs['attention_mask'] = inputs['attention_mask'][:, :max_input_length]
+                # Generate summary
+                with torch.no_grad():
+                    response = st.session_state.model.generate(
+                        **inputs,
+                        max_new_tokens=200,
+                        no_repeat_ngram_size=2,
+                        do_sample=True,
+                        temperature=0.5
+                    )
 
-            # Generate a summary
-            with torch.no_grad():
-                response = st.session_state.model.generate(
-                    **inputs,
-                    max_new_tokens=50,
-                    no_repeat_ngram_size=2,
-                    do_sample=True,
-                    early_stopping=True
-                )
+                # Decode and clean
+                raw_summary = st.session_state.tokenizer.decode(response[0], skip_special_tokens=True)
+                cleaned_summary = clean_text(raw_summary)
 
-            # Decode the generated summary
-            summary = st.session_state.tokenizer.decode(response[0], skip_special_tokens=True).strip()
+                # Enforce line limits
+                summary_lines = [line.strip() for line in cleaned_summary.split('.') if line.strip()][:3]
+                final_summary = '. '.join(summary_lines)
 
-            # Check if the summary exceeds the desired length
-            if len(summary.split()) > 50:
-                summary = ' '.join(summary.split()[:50])  # Trim to first 50 words
+                state["Messages"].append(final_summary)
 
-            state["Messages"].append(summary)
+            except Exception as e:
+                print(f"Summarization error: {e}")
+                state["summary"] = "Error in summarization process"
         else:
-            state["summary"] = "Error: The first document is not valid."
+            state["summary"] = "Error: Invalid document format"
     else:
         state["summary"] = "No documents available to summarize."
 
     return state
 
-
-
-
-def clean_text(generation):
-    # Define the sentences to be removed
-    sentences_to_remove = {
-        "أعطِ إجابة واضحة ومباشرة، تعتمد فقط على المعلومات الموجودة في السياق.": '',
-        "تجنب تكرار أي جزء من السؤال أو السياق في الإجابة.": ''
-    }
-
-    # Create a regex pattern that matches any of the sentences
-    pattern = re.compile('|'.join(re.escape(sentence) for sentence in sentences_to_remove.keys()))
-
-    # Use the pattern to substitute the sentences with an empty string
-    cleaned_generation = pattern.sub(lambda match: sentences_to_remove[match.group(0)], generation)
-
-    # Clean up any extra whitespace left after removal
-    cleaned_generation = re.sub(r'\s+', ' ', cleaned_generation).strip()
-
-    return cleaned_generation
-
 def call_llm_with_top_paragraphs(state: GraphState) -> GraphState:
-    """Call LLM using the summarized document content."""
-    
-    question = state.get("question")
-    latest_message = state.get("Messages", ["No relevant summary available."])[-1]
+    """Generate concise legal answers with enhanced cleaning"""
+    question = clean_text(state.get("question", ""))
+    context = state.get("Messages", ["لا يوجد سياق"])[-1][:500]
 
-    # Clean the latest message
-    latest_message = clean_text(latest_message)
-    
-    if "generation" not in state:
-        state["generation"] = ""
+    # Enhanced prompt template
+    prompt_template = """
+    السؤال القانوني:
+    {question}
 
-    model_input = (
-        f"السؤال: {question}\n"
-        f"السياق: {latest_message}\n\n"
-        "الجواب: أعطِ إجابة واضحة ومباشرة، تعتمد فقط على المعلومات الموجودة في السياق. "
-        "تجنب تكرار أي جزء من السؤال أو السياق في الإجابة."
-    )
+    السياق المرجعي:
+    {context}
 
-    inputs = st.session_state.tokenizer(model_input, return_tensors="pt").to(model.device)
-    
+    التعليمات الصارمة:
+    1. ابدأ الإجابة مباشرة بعبارة "الإجابة هي:"
+    2. قدم النقاط القانونية الرئيسية فقط
+    3. استخدم الترقيم العربي (١، ٢، ٣)
+    4. تجنب أي ذكر للتعليمات أو السياق
+    5. أجب حصرياً باللغة العربية الفصحى
+
+    الإجابة:
+    """.strip()
+
+    inputs = st.session_state.tokenizer(
+        prompt_template.format(question=question, context=context),
+        return_tensors="pt",
+        max_length=1024,
+        truncation=True
+    ).to(model.device)
+
+    # Generate response
     with torch.no_grad():
         response = st.session_state.model.generate(
             **inputs,
-            max_new_tokens=260,
+            max_new_tokens=200,
             do_sample=True,
-            top_k=60,
-            top_p=0.96,
-            no_repeat_ngram_size=2,
-            temperature=0.4
+            top_k=40,
+            top_p=0.9,
+            temperature=0.4,
+            repetition_penalty=1.2
         )
 
-    print("Response IDs:", response)
+    # Post-processing
+    raw_answer = st.session_state.tokenizer.decode(response[0], skip_special_tokens=True)
+    cleaned_answer = clean_text(raw_answer)
     
-    generation = st.session_state.tokenizer.decode(response[0], skip_special_tokens=True).strip()
+    # Final validation
+    if not cleaned_answer.startswith("الإجابة"):
+        cleaned_answer = f"الإجابة هي:\n{cleaned_answer}"
     
-    # Clean the generated answer
-    generation = re.sub(
-        r'أعطِ إجابة واضحة ومباشرة، تعتمد فقط على المعلومات الموجودة في السياق\. تجنب تكرار أي جزء من السؤال أو السياق في الإجابة\.',
-        '', 
-        generation
-    )
-
-    # Get embeddings for the question and generated answer
-    question_tensor = st.session_state.tokenizer(question, return_tensors="pt").to(model.device)
-    generated_answer_tensor = st.session_state.tokenizer(generation, return_tensors="pt").to(model.device)
-
-    # Generate logits instead of trying to get last_hidden_state
-    with torch.no_grad():
-        question_logits = st.session_state.model(**question_tensor).logits
-        generated_answer_logits = st.session_state.model(**generated_answer_tensor).logits
-
-    # Ensure that you are accessing the correct dimension
-    # Using the last token's logits for comparison
-    question_embedding = question_logits[:, -1, :] if question_logits.dim() > 1 else question_logits
-    generated_answer_embedding = generated_answer_logits[:, -1, :] if generated_answer_logits.dim() > 1 else generated_answer_logits
-
-    # Reshape if needed to ensure they are 2D
-    if question_embedding.dim() == 1:
-        question_embedding = question_embedding.unsqueeze(0)  # Add batch dimension
-    if generated_answer_embedding.dim() == 1:
-        generated_answer_embedding = generated_answer_embedding.unsqueeze(0)  # Add batch dimension
-
-    # Calculate similarity score
-    similarity_score = torch.nn.functional.cosine_similarity(question_embedding, generated_answer_embedding)
-    relevance_score = torch.sigmoid(similarity_score).item()  # Get the relevance score
-
-    if relevance_score < 0.60:  # Check if the score is less than 80%
-        print("Relevance score is less than 60%, regenerating answer...")
-        print(f"relevence score: ",relevance_score)
-        return call_llm_with_top_paragraphs(state)  # Recursively call to regenerate answer
-
-    # Clean the generated answer
-    generation = clean_text(generation)
-
-    if "Messages" not in state:
-        state["Messages"] = []
+    # Format Arabic numbering
+    cleaned_answer = re.sub(r'(\d+)-', lambda m: f"{int(m.group(1))}٫", cleaned_answer)
     
-    state["generation"] = generation
-    state["documents"] = []
+    state["generation"] = cleaned_answer
     state["Messages"].append(f"Q: {question}\nA: {state['generation']}")
-    print(f"Answer: {state.get('generation')}")
-
-    print("Cleared documents from the state.")
-
     return state
-
-
-
-
-
-
 
 
 workflow.add_node("retrieve", retrieve)
@@ -470,76 +461,131 @@ class Message:
         self.message = message
 
 def load_css():
-    with open("style.css", "r") as f:
-        css = f"<style>{f.read()}</style>"
-        st.markdown(css, unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+    :root {
+        --primary-color: #2c3e50;
+        --secondary-color: #3498db;
+        --gold-accent: #d4af37;
+        --text-color: #2c3e50;
+    }
+    
+    .chat-row {
+        display: flex;
+        margin: 1.5rem 0;
+        direction: rtl;
+    }
+    
+    .row-reverse {
+        flex-direction: row-reverse;
+    }
+    
+    .chat-bubble {
+        padding: 1.2rem 1.8rem;
+        border-radius: 25px;
+        max-width: 75%;
+        font-family: 'Noto Sans Arabic', Tahoma, sans-serif;
+        font-size: 1.1rem;
+        line-height: 1.8;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        position: relative;
+    }
+    
+    .human-bubble {
+        background: var(--primary-color);
+        color: white;
+        margin-left: 10%;
+        border-bottom-right-radius: 5px;
+    }
+    
+    .ai-bubble {
+        background: #f8f9fa;
+        color: var(--text-color);
+        border: 2px solid var(--gold-accent);
+        margin-right: 10%;
+        border-bottom-left-radius: 5px;
+    }
+    
+    .stTextInput>div>div>input {
+        text-align: right;
+        padding: 15px;
+        font-size: 1.1rem;
+        border: 2px solid var(--gold-accent);
+        border-radius: 8px;
+    }
+    
+    .stButton>button {
+        background: var(--gold-accent);
+        color: var(--primary-color);
+        font-weight: bold;
+        padding: 12px 30px;
+        border-radius: 8px;
+        border: none;
+        font-size: 1.1rem;
+        transition: all 0.3s ease;
+    }
+    
+    .stButton>button:hover {
+        background: #b39530;
+        transform: scale(1.05);
+    }
+    
+    @font-face {
+        font-family: 'Noto Sans Arabic';
+        font-style: normal;
+        font-weight: 400;
+        src: url(https://fonts.gstatic.com/s/notosansarabic/v18/nwpxtLGrOAZMl5nJ_wfgRg3DrWFZWsnVBJ_sS6tlqHHFlj4wv4o.woff2) format('woff2');
+    }
+    
+    .stMarkdown h1 {
+        text-align: right;
+        color: var(--primary-color);
+        border-bottom: 3px solid var(--gold-accent);
+        padding-bottom: 0.5rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 def initialize_session_state():
     if "history" not in st.session_state:
         st.session_state.history = []
-
     if 'conversation' not in st.session_state:
         st.session_state.conversation = ConversationChain(
             llm=llm,
             memory=ConversationSummaryMemory(llm=llm),
         )
 
-
-import re
-
+# Update the on_click_callback function
 def on_click_callback():
-    # Retrieve user input from session state
     human_prompt = st.session_state.human_prompt
-
-    # Append user input to history
     st.session_state.history.append(Message("human", human_prompt))
 
-    # Initialize the state with user input
     state = {
         "question": human_prompt,
-        "generation": "",  # Initialize as an empty string
-        "documents": [],   # Initialize as an empty list
-        "Messages": []     # Initialize as an empty list
+        "generation": "",
+        "documents": [],
+        "Messages": []
     }
 
-    # Use Streamlit's spinner for UI feedback
-    with st.spinner("Generating response..."):
-        # Invoke the app and pass the state
-        final_state = st.session_state.app.invoke(state)
+    with st.spinner("جارٍ معالجة طلبك..."):
+        try:
+            final_state = st.session_state.app.invoke(state)
+            if final_state["generation"]:
+                # Apply final cleaning before display
+                cleaned_response = clean_text(final_state["generation"])
+                st.session_state.history.append(Message("ai", cleaned_response))
+        except Exception as e:
+            st.error(f"حدث خطأ في المعالجة: {str(e)}")
+            st.session_state.history.append(Message("ai", "حدث خطأ غير متوقع. يرجى المحاولة لاحقًا."))
 
-        # Check if the 'Messages' is present in the final state and has content
-        if "generation" in final_state and final_state["generation"]:
-            llm_response = final_state["generation"]  # Access the last message directly
             
-            # Use regex to remove any English letters or words
-            llm_response = re.sub(r'[A-Za-z0-9]+', '', llm_response)
-
-            #st.write("Answer:", llm_response.strip())  # Display the answer without leading/trailing spaces
-            st.session_state.history.append(Message("ai", llm_response))  # Append to history
-        else:
-            st.write("Answer:", "No response generated.")
-
-def load_css():
-    with open("style.css", "r") as f:
-        css = f"<style>{f.read()}</style>"
-        st.markdown(css, unsafe_allow_html=True)
-
-
-
-
 load_css()
 initialize_session_state()
 
-# Load your logo
-logo_path = "logo.png"  # Update with your logo path
-st.image(logo_path, use_column_width=False, output_format="auto")
-
-# Create placeholders for chat and input form
 chat_placeholder = st.container()
 prompt_placeholder = st.form("chat-form")
 
 with chat_placeholder:
-    # Display chat history
     for chat in st.session_state.history:
         div = f"""
         <div class="chat-row {'row-reverse' if chat.origin == 'human' else ''}">
@@ -550,44 +596,26 @@ with chat_placeholder:
         """
         st.markdown(div, unsafe_allow_html=True)
 
-    # Add spacing
-    for _ in range(3):
-        st.markdown("")
-
 with prompt_placeholder:
-    st.markdown("**Chat**")
     cols = st.columns((6, 1))
     cols[0].text_input(
-        "Chat",
+        "أدخل استفسارك القانوني هنا",
         value="",
         label_visibility="collapsed",
         key="human_prompt",
     )
     cols[1].form_submit_button(
-        "Submit", 
+        "إرسال", 
         type="primary", 
         on_click=on_click_callback, 
     )
 
-# JavaScript to handle 'Enter' key submission
 components.html("""
 <script>
-const streamlitDoc = window.parent.document;
-
-const buttons = Array.from(
-    streamlitDoc.querySelectorAll('.stButton > button')
-);
-const submitButton = buttons.find(
-    el => el.innerText === 'Submit'
-);
-
-streamlitDoc.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-        submitButton.click();
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        document.querySelector('button[type="submit"]').click();
     }
 });
 </script>
-""", 
-    height=0,
-    width=0,
-)
+""", height=0, width=0)
